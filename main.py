@@ -268,6 +268,7 @@ if __name__ == "__main__":
 
     def log_session_summary():
         if _session["clicks"] == 0:
+            log(f"[{current_time()}] No session Data")
             return "No Session Data"
 
         total_clicks = _session["clicks"]
@@ -344,12 +345,17 @@ if __name__ == "__main__":
     # -----------------------------------------------------------------------
 
     def on_stop(clicks, elapsed, avg_cpu):
-        log(f"[{current_time()}] Session Stopped")
+        _session["clicks"] += clicks
+        _session["elapsed"] += elapsed
+        _session["cpu_samples"].append(avg_cpu)
+
+        log(f"[{current_time()}] Stopping Session and sending data...")
+
+        log_session_summary()
+        update_local_statistics(clicks, elapsed, avg_cpu)
         cpu = avg_cpu if avg_cpu > 0.0 else None
         threading.Thread(target=send_stats, args=(
             clicks, elapsed, cpu)).start()
-        log_session_summary()
-        update_local_statistics(clicks, elapsed, avg_cpu)
 
     _cb_ref = STATS_CB(on_stop)
     dll.set_stats_callback(_cb_ref)
@@ -489,8 +495,8 @@ if __name__ == "__main__":
     # -----------------------------------------------------------------------
 
     def set_click_speed_limit():
-        limits = {"second": 1000, "minute": 10000,
-                  "hour": 100000, "day": 1000000}
+        limits = {"second": 500, "minute": 30000,
+                  "hour": 1800000, "day": 43200000}
         ui_widgets.click_speed_input.setMaximum(
             limits.get(ui_widgets.click_interval_combobox.currentText().lower(), 1000))
 
@@ -499,6 +505,7 @@ if __name__ == "__main__":
         set_click_speed_limit)
 
     def click_speed_warn():
+        # Indirectly Irrelivant because Click Speed limit is currently hard capped at 500
         global show_high_speed_warn
 
         if not show_high_speed_warn:
@@ -507,7 +514,7 @@ if __name__ == "__main__":
         divisors = {"second": 1, "minute": 60, "hour": 3600, "day": 86400}
         unit = ui_widgets.click_interval_combobox.currentText().lower()
 
-        if cps / divisors.get(unit, 1) >= 500:
+        if cps / divisors.get(unit, 1) >= 501:
             warning = QMessageBox()
             warning.setWindowTitle("High Click Speed")
             warning.setText(

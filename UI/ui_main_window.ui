@@ -822,7 +822,7 @@ li.checked::marker { content: &quot;\2612&quot;; }
              <x>0</x>
              <y>0</y>
              <width>422</width>
-             <height>123</height>
+             <height>121</height>
             </rect>
            </property>
            <layout class="QVBoxLayout" name="verticalLayout_14">
@@ -1217,7 +1217,7 @@ li.checked::marker { content: &quot;\2612&quot;; }
              <x>0</x>
              <y>0</y>
              <width>422</width>
-             <height>181</height>
+             <height>185</height>
             </rect>
            </property>
            <layout class="QVBoxLayout" name="verticalLayout_15">
@@ -1766,8 +1766,8 @@ li.checked::marker { content: &quot;\2612&quot;; }
             <rect>
              <x>0</x>
              <y>0</y>
-             <width>410</width>
-             <height>410</height>
+             <width>408</width>
+             <height>404</height>
             </rect>
            </property>
            <layout class="QVBoxLayout" name="verticalLayout_8">

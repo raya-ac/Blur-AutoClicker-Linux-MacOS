@@ -286,7 +286,8 @@ pub extern "C" fn start_clicker(
     CLICK_COUNT.store(0, Ordering::SeqCst);
     IS_RUNNING.store(true, Ordering::SeqCst);
 
-    let mut current = 0u32; // Request high timer resolution (in nanoseconds)
+    let mut current = 0u32;
+    // Request high timer resolution (in nanoseconds)
     unsafe { NtSetTimerResolution(10000, 1, &mut current) };
 
     let mut rng = SmallRng::new();
@@ -316,25 +317,8 @@ pub extern "C" fn start_clicker(
     }
 
     let mut next_batch_time = Instant::now();
-    let mut fatigue: f64 = 0.0;
-    let mut next_pause: i64 = 180 + (rng.next_u64() % 120) as i64;
 
     while IS_RUNNING.load(Ordering::SeqCst) {
-        // Introduce random pauses to simulate fatigue if variation is enabled
-        if variation > 0.0 && click_count >= next_pause {
-            let pause_ms = 50 + (rng.next_u64() % 200) as u64;
-            std::thread::sleep(Duration::from_millis(pause_ms));
-            next_pause = click_count + 180 + (rng.next_u64() % 120) as i64;
-            fatigue = 0.0;
-        }
-
-        // Increase fatigue based on variation and whether speed variation is enabled
-        fatigue = if variation > 0.0 {
-            (fatigue + 0.0000002).min(0.15)
-        } else {
-            0.0
-        };
-
         // Check limits
         if (limit > 0 && click_count >= limit as i64)
             || (time_limit > 0.0 && start_time.elapsed().as_secs_f64() >= time_limit)
@@ -345,7 +329,7 @@ pub extern "C" fn start_clicker(
         // Apply timing variation for this interval
         let batch_duration = if variation > 0.0 {
             let std_dev = batch_interval * (variation / 100.0) * 0.5;
-            rng.next_gaussian(batch_interval, std_dev) * (1.0 + fatigue)
+            rng.next_gaussian(batch_interval, std_dev)
         } else {
             batch_interval
         };
@@ -428,10 +412,11 @@ pub extern "C" fn start_clicker(
         avg
     };
 
-    println!(
-        "\x1b[32m[Stats]\x1b[0m Time: {:.2}s, Clicks: {}, Avg CPU: {:.1}%",
-        elapsed, click_count, avg_cpu,
-    );
+    println!("\x1b[32m[Run Stats]\x1b[0m ------ Run Summary ------");
+    println!("\x1b[32m[Run Stats]\x1b[0m Run Clicks : {}", click_count);
+    println!("\x1b[32m[Run Stats]\x1b[0m Run Time   : {:.2}s", elapsed);
+    println!("\x1b[32m[Run Stats]\x1b[0m Run Avg CPU: {:.1}%", avg_cpu);
+    println!("\x1b[32m[Run Stats]\x1b[0m -------------------------");
 
     // Fire the Python callback with final stats
     if let Some(cb) = ON_STOP.get() {
