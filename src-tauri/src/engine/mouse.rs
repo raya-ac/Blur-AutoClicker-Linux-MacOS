@@ -2,45 +2,288 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    SendInput, INPUT, INPUT_MOUSE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
-    MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP,
-    MOUSEINPUT,
-};
-use windows_sys::Win32::UI::WindowsAndMessaging::{
-    GetSystemMetrics, SetCursorPos, SM_CXSCREEN, SM_CYSCREEN,
-};
-
 use super::rng::SmallRng;
 use super::sleep_interruptible;
 
-pub fn current_cursor_position() -> Option<(i32, i32)> {
-    use windows_sys::Win32::Foundation::POINT;
-    use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
+// --- Windows ---
+#[cfg(target_os = "windows")]
+mod platform {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+        SendInput, INPUT, INPUT_MOUSE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
+        MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP,
+        MOUSEINPUT,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetSystemMetrics, SetCursorPos, SM_CXSCREEN, SM_CYSCREEN,
+    };
 
-    let mut point = POINT { x: 0, y: 0 };
-    let ok = unsafe { GetCursorPos(&mut point) };
-    if ok == 0 {
-        None
-    } else {
-        Some((point.x, point.y))
+    pub fn current_cursor_position() -> Option<(i32, i32)> {
+        use windows_sys::Win32::Foundation::POINT;
+        use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
+
+        let mut point = POINT { x: 0, y: 0 };
+        let ok = unsafe { GetCursorPos(&mut point) };
+        if ok == 0 {
+            None
+        } else {
+            Some((point.x, point.y))
+        }
+    }
+
+    pub fn current_screen_size() -> Option<(i32, i32)> {
+        let width = unsafe { GetSystemMetrics(SM_CXSCREEN) };
+        let height = unsafe { GetSystemMetrics(SM_CYSCREEN) };
+        if width <= 0 || height <= 0 {
+            return None;
+        }
+        use windows_sys::Win32::UI::HiDpi::GetDpiForSystem;
+        let dpi = unsafe { GetDpiForSystem() };
+        let scale = dpi as f64 / 96.0;
+        Some((
+            (width as f64 / scale) as i32,
+            (height as f64 / scale) as i32,
+        ))
+    }
+
+    pub fn move_mouse(x: i32, y: i32) {
+        unsafe { SetCursorPos(x, y) };
+    }
+
+    #[inline]
+    fn make_input(flags: u32) -> INPUT {
+        INPUT {
+            r#type: INPUT_MOUSE,
+            Anonymous: windows_sys::Win32::UI::Input::KeyboardAndMouse::INPUT_0 {
+                mi: MOUSEINPUT {
+                    dx: 0,
+                    dy: 0,
+                    mouseData: 0,
+                    dwFlags: flags,
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
+            },
+        }
+    }
+
+    pub fn send_mouse_event(flags: u32) {
+        let input = make_input(flags);
+        unsafe { SendInput(1, &input, std::mem::size_of::<INPUT>() as i32) };
+    }
+
+    pub fn send_batch(down: u32, up: u32, n: usize) {
+        let mut inputs: Vec<INPUT> = Vec::with_capacity(n * 2);
+        for _ in 0..n {
+            inputs.push(make_input(down));
+            inputs.push(make_input(up));
+        }
+        unsafe {
+            SendInput(
+                inputs.len() as u32,
+                inputs.as_ptr(),
+                std::mem::size_of::<INPUT>() as i32,
+            )
+        };
+    }
+
+    pub fn get_button_flags(button: i32) -> (u32, u32) {
+        match button {
+            2 => (MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP),
+            3 => (MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP),
+            _ => (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP),
+        }
     }
 }
 
-pub fn current_screen_size() -> Option<(i32, i32)> {
-    let width = unsafe { GetSystemMetrics(SM_CXSCREEN) };
-    let height = unsafe { GetSystemMetrics(SM_CYSCREEN) };
-    if width <= 0 || height <= 0 {
-        return None;
-    }
-    use windows_sys::Win32::UI::HiDpi::GetDpiForSystem;
-    let dpi = unsafe { GetDpiForSystem() };
-    let scale = dpi as f64 / 96.0;
+// --- macOS (CoreGraphics) ---
+#[cfg(target_os = "macos")]
+mod platform {
+    use core_graphics::display::CGDisplay;
+    use core_graphics::event::{CGEvent, CGEventTapLocation, CGEventType, CGMouseButton};
+    use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
+    use core_graphics::geometry::CGPoint;
 
-    Some((
-        (width as f64 / scale) as i32,
-        (height as f64 / scale) as i32,
-    ))
+    pub fn current_cursor_position() -> Option<(i32, i32)> {
+        let source = CGEventSource::new(CGEventSourceStateID::CombinedSessionState).ok()?;
+        let event = CGEvent::new(source).ok()?;
+        let loc = event.location();
+        Some((loc.x as i32, loc.y as i32))
+    }
+
+    pub fn current_screen_size() -> Option<(i32, i32)> {
+        let display = CGDisplay::main();
+        let w = display.pixels_wide();
+        let h = display.pixels_high();
+        if w == 0 || h == 0 {
+            return None;
+        }
+        let mode = display.display_mode()?;
+        Some((mode.width() as i32, mode.height() as i32))
+    }
+
+    pub fn move_mouse(x: i32, y: i32) {
+        let point = CGPoint::new(x as f64, y as f64);
+        if let Ok(source) = CGEventSource::new(CGEventSourceStateID::CombinedSessionState) {
+            if let Ok(event) = CGEvent::new_mouse_event(
+                source,
+                CGEventType::MouseMoved,
+                point,
+                CGMouseButton::Left,
+            ) {
+                event.post(CGEventTapLocation::HID);
+            }
+        }
+    }
+
+    fn cg_button(btn_id: u32) -> CGMouseButton {
+        match btn_id {
+            2 => CGMouseButton::Right,
+            3 => CGMouseButton::Center,
+            _ => CGMouseButton::Left,
+        }
+    }
+
+    fn button_event_types(btn_id: u32) -> (CGEventType, CGEventType) {
+        match btn_id {
+            2 => (CGEventType::RightMouseDown, CGEventType::RightMouseUp),
+            3 => (CGEventType::OtherMouseDown, CGEventType::OtherMouseUp),
+            _ => (CGEventType::LeftMouseDown, CGEventType::LeftMouseUp),
+        }
+    }
+
+    // low byte = button (1/2/3), bit 8 = down/up
+    pub fn send_mouse_event(flags: u32) {
+        let btn_id = flags & 0xFF;
+        let is_down = (flags >> 8) & 1 == 1;
+        let cg_btn = cg_button(btn_id);
+        let (down_type, up_type) = button_event_types(btn_id);
+        let event_type = if is_down { down_type } else { up_type };
+
+        let pos = super::current_cursor_position().unwrap_or((0, 0));
+        let point = CGPoint::new(pos.0 as f64, pos.1 as f64);
+        if let Ok(source) = CGEventSource::new(CGEventSourceStateID::CombinedSessionState) {
+            if let Ok(event) = CGEvent::new_mouse_event(source, event_type, point, cg_btn) {
+                event.post(CGEventTapLocation::HID);
+            }
+        }
+    }
+
+    pub fn send_batch(down: u32, up: u32, n: usize) {
+        for _ in 0..n {
+            send_mouse_event(down);
+            send_mouse_event(up);
+        }
+    }
+
+    pub fn get_button_flags(button: i32) -> (u32, u32) {
+        let btn = match button {
+            2 => 2u32,
+            3 => 3u32,
+            _ => 1u32,
+        };
+        (btn | 0x100, btn) // high bit = press
+    }
+}
+
+// --- Linux (X11 + XTest) ---
+#[cfg(target_os = "linux")]
+mod platform {
+    use x11::xlib;
+    use x11::xtest;
+    use std::ptr;
+
+    fn with_display<T>(f: impl FnOnce(*mut xlib::Display) -> T) -> Option<T> {
+        let display = unsafe { xlib::XOpenDisplay(ptr::null()) };
+        if display.is_null() {
+            return None;
+        }
+        let result = f(display);
+        unsafe { xlib::XCloseDisplay(display) };
+        Some(result)
+    }
+
+    pub fn current_cursor_position() -> Option<(i32, i32)> {
+        with_display(|display| {
+            let root = unsafe { xlib::XDefaultRootWindow(display) };
+            let (mut root_ret, mut child_ret) = (0, 0);
+            let (mut rx, mut ry, mut wx, mut wy) = (0, 0, 0, 0);
+            let mut mask = 0;
+            unsafe {
+                xlib::XQueryPointer(
+                    display, root, &mut root_ret, &mut child_ret,
+                    &mut rx, &mut ry, &mut wx, &mut wy, &mut mask,
+                );
+            }
+            (rx, ry)
+        })
+    }
+
+    pub fn current_screen_size() -> Option<(i32, i32)> {
+        with_display(|display| {
+            let screen = unsafe { xlib::XDefaultScreen(display) };
+            let w = unsafe { xlib::XDisplayWidth(display, screen) };
+            let h = unsafe { xlib::XDisplayHeight(display, screen) };
+            (w, h)
+        })
+    }
+
+    pub fn move_mouse(x: i32, y: i32) {
+        with_display(|display| {
+            let root = unsafe { xlib::XDefaultRootWindow(display) };
+            unsafe {
+                xlib::XWarpPointer(display, 0, root, 0, 0, 0, 0, x, y);
+                xlib::XFlush(display);
+            }
+        });
+    }
+
+    fn x11_button(button: i32) -> u32 {
+        match button {
+            2 => 3, // X11: 3 = right click
+            3 => 2, // X11: 2 = middle click
+            _ => 1,
+        }
+    }
+
+    // low byte = X11 button, bit 8 = press/release
+    pub fn send_mouse_event(flags: u32) {
+        let x11_btn = (flags & 0xFF) as u32;
+        let is_press = (flags >> 8) & 1 == 1;
+        with_display(|display| {
+            unsafe {
+                xtest::XTestFakeButtonEvent(display, x11_btn, if is_press { 1 } else { 0 }, 0);
+                xlib::XFlush(display);
+            }
+        });
+    }
+
+    pub fn send_batch(down: u32, up: u32, n: usize) {
+        with_display(|display| {
+            let btn_down = (down & 0xFF) as u32;
+            for _ in 0..n {
+                unsafe {
+                    xtest::XTestFakeButtonEvent(display, btn_down, 1, 0);
+                    xtest::XTestFakeButtonEvent(display, btn_down, 0, 0);
+                }
+            }
+            unsafe { xlib::XFlush(display) };
+        });
+    }
+
+    pub fn get_button_flags(button: i32) -> (u32, u32) {
+        let btn = x11_button(button);
+        (btn | 0x100, btn)
+    }
+}
+
+// --- public API (delegates to platform) ---
+
+pub fn current_cursor_position() -> Option<(i32, i32)> {
+    platform::current_cursor_position()
+}
+
+pub fn current_screen_size() -> Option<(i32, i32)> {
+    platform::current_screen_size()
 }
 
 #[inline]
@@ -50,45 +293,16 @@ pub fn get_cursor_pos() -> (i32, i32) {
 
 #[inline]
 pub fn move_mouse(x: i32, y: i32) {
-    unsafe { SetCursorPos(x, y) };
-}
-
-#[inline]
-pub fn make_input(flags: u32, time: u32) -> INPUT {
-    INPUT {
-        r#type: INPUT_MOUSE,
-        Anonymous: windows_sys::Win32::UI::Input::KeyboardAndMouse::INPUT_0 {
-            mi: MOUSEINPUT {
-                dx: 0,
-                dy: 0,
-                mouseData: 0,
-                dwFlags: flags,
-                time,
-                dwExtraInfo: 0,
-            },
-        },
-    }
+    platform::move_mouse(x, y);
 }
 
 #[inline]
 pub fn send_mouse_event(flags: u32) {
-    let input = make_input(flags, 0);
-    unsafe { SendInput(1, &input, std::mem::size_of::<INPUT>() as i32) };
+    platform::send_mouse_event(flags);
 }
 
 pub fn send_batch(down: u32, up: u32, n: usize, _hold_ms: u32) {
-    let mut inputs: Vec<INPUT> = Vec::with_capacity(n * 2);
-    for _ in 0..n {
-        inputs.push(make_input(down, 0));
-        inputs.push(make_input(up, 0));
-    }
-    unsafe {
-        SendInput(
-            inputs.len() as u32,
-            inputs.as_ptr(),
-            std::mem::size_of::<INPUT>() as i32,
-        )
-    };
+    platform::send_batch(down, up, n);
 }
 
 pub fn send_clicks(
@@ -128,11 +342,7 @@ pub fn send_clicks(
 
 #[inline]
 pub fn get_button_flags(button: i32) -> (u32, u32) {
-    match button {
-        2 => (MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP),
-        3 => (MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP),
-        _ => (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP),
-    }
+    platform::get_button_flags(button)
 }
 
 #[inline]

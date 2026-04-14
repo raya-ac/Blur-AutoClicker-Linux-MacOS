@@ -27,10 +27,34 @@ pub struct RunRecord {
 }
 
 fn stats_file_path() -> PathBuf {
-    let app_data = std::env::var("APPDATA").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(app_data)
-        .join("BlurAutoClicker")
-        .join("stats.csv")
+    #[cfg(target_os = "windows")]
+    {
+        let app_data = std::env::var("APPDATA").unwrap_or_else(|_| ".".to_string());
+        PathBuf::from(app_data)
+            .join("BlurAutoClicker")
+            .join("stats.csv")
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        PathBuf::from(home)
+            .join("Library")
+            .join("Application Support")
+            .join("BlurAutoClicker")
+            .join("stats.csv")
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let data_dir = std::env::var("XDG_DATA_HOME").unwrap_or_else(|_| {
+            let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+            format!("{}/.local/share", home)
+        });
+        PathBuf::from(data_dir)
+            .join("BlurAutoClicker")
+            .join("stats.csv")
+    }
 }
 
 fn round2(v: f64) -> f64 {

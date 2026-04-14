@@ -15,52 +15,140 @@ use crate::STATUS_EVENT;
 use super::failsafe::should_stop_for_failsafe;
 use super::mouse::{get_button_flags, get_cursor_pos, move_mouse, send_clicks, smooth_move};
 use super::rng::SmallRng;
+use super::set_timer_resolution;
 use super::ClickerConfig;
-use super::NtSetTimerResolution;
 use super::RunOutcome;
 use super::CLICK_COUNT;
 
-// -- CPU measurement --
-// changed from normal cpu measurement because it was not accurately
-// showing cpu usage for short clicker run times.
+// --- per-thread CPU time ---
 
-windows_targets::link!(
-    "kernel32.dll" "system" fn QueryThreadCycleTime(thread: *mut core::ffi::c_void, cycles: *mut u64) -> i32
-);
-windows_targets::link!(
-    "kernel32.dll" "system" fn GetCurrentThread() -> *mut core::ffi::c_void
-);
+#[cfg(target_os = "windows")]
+mod cpu {
+    use std::time::Instant;
 
-#[inline]
-fn thread_cycles() -> u64 {
-    let mut cycles: u64 = 0;
-    unsafe {
-        QueryThreadCycleTime(GetCurrentThread(), &mut cycles);
+    windows_targets::link!(
+        "kernel32.dll" "system" fn QueryThreadCycleTime(thread: *mut core::ffi::c_void, cycles: *mut u64) -> i32
+    );
+    windows_targets::link!(
+        "kernel32.dll" "system" fn GetCurrentThread() -> *mut core::ffi::c_void
+    );
+
+    #[inline]
+    fn thread_cycles() -> u64 {
+        let mut cycles: u64 = 0;
+        unsafe { QueryThreadCycleTime(GetCurrentThread(), &mut cycles) };
+        cycles
     }
-    cycles
+
+    fn calibrate_cycle_freq() -> f64 {
+        let start_cycles = thread_cycles();
+        let start = Instant::now();
+        while start.elapsed().as_millis() < 5 {
+            std::hint::spin_loop();
+        }
+        let delta = thread_cycles().saturating_sub(start_cycles);
+        let wall = start.elapsed().as_secs_f64();
+        if wall > 0.0 && delta > 0 {
+            let freq = delta as f64 / wall;
+            log::info!("CPU: calibrated at {:.0} MHz", freq / 1_000_000.0);
+            freq
+        } else {
+            3_000_000_000.0
+        }
+    }
+
+    pub struct CpuTimer {
+        cycle_freq: f64,
+        start_cycles: u64,
+    }
+
+    impl CpuTimer {
+        pub fn start() -> Self {
+            let freq = calibrate_cycle_freq();
+            Self {
+                cycle_freq: freq,
+                start_cycles: thread_cycles(),
+            }
+        }
+
+        pub fn finish(&self, elapsed_secs: f64) -> f64 {
+            let delta = thread_cycles().saturating_sub(self.start_cycles);
+            if elapsed_secs < 0.001 {
+                return -1.0;
+            }
+            let cpu_secs = delta as f64 / self.cycle_freq;
+            let pct = (cpu_secs / elapsed_secs) * 100.0;
+            if pct < 0.001 { -1.0 } else { pct }
+        }
+    }
 }
 
-// Calibrates the CPU cycle frequency
-fn calibrate_cycle_freq() -> f64 {
-    let start_cycles = thread_cycles();
-    let start = Instant::now();
-
-    // Spin for ~5ms
-    while start.elapsed().as_millis() < 5 {
-        std::hint::spin_loop();
+#[cfg(target_os = "macos")]
+mod cpu {
+    // clock_gettime works on 10.12+ and avoids the mach FFI headache
+    pub struct CpuTimer {
+        start_ns: u64,
     }
 
-    let cycle_delta = thread_cycles().saturating_sub(start_cycles);
-    let wall_secs = start.elapsed().as_secs_f64();
-    
-    if wall_secs > 0.0 && cycle_delta > 0 {
-        let freq = cycle_delta as f64 / wall_secs;
-        log::info!("CPU: calibrated at {:.0} MHz", freq / 1_000_000.0);
-        freq
-    } else {
-        3_000_000_000.0 // fallback 3 GHz
+    fn thread_cpu_time_ns() -> u64 {
+        let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+        unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut ts) };
+        ts.tv_sec as u64 * 1_000_000_000 + ts.tv_nsec as u64
+    }
+
+    impl CpuTimer {
+        pub fn start() -> Self {
+            Self {
+                start_ns: thread_cpu_time_ns(),
+            }
+        }
+
+        pub fn finish(&self, elapsed_secs: f64) -> f64 {
+            let delta_ns = thread_cpu_time_ns().saturating_sub(self.start_ns);
+            if elapsed_secs < 0.001 {
+                return -1.0;
+            }
+            let cpu_secs = delta_ns as f64 / 1_000_000_000.0;
+            let pct = (cpu_secs / elapsed_secs) * 100.0;
+            if pct < 0.001 { -1.0 } else { pct }
+        }
     }
 }
+
+#[cfg(target_os = "linux")]
+mod cpu {
+    pub struct CpuTimer {
+        start_ns: u64,
+    }
+
+    fn thread_cpu_time_ns() -> u64 {
+        let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+        unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut ts) };
+        ts.tv_sec as u64 * 1_000_000_000 + ts.tv_nsec as u64
+    }
+
+    impl CpuTimer {
+        pub fn start() -> Self {
+            Self {
+                start_ns: thread_cpu_time_ns(),
+            }
+        }
+
+        pub fn finish(&self, elapsed_secs: f64) -> f64 {
+            let delta_ns = thread_cpu_time_ns().saturating_sub(self.start_ns);
+            if elapsed_secs < 0.001 {
+                return -1.0;
+            }
+            let cpu_secs = delta_ns as f64 / 1_000_000_000.0;
+            let pct = (cpu_secs / elapsed_secs) * 100.0;
+            if pct < 0.001 { -1.0 } else { pct }
+        }
+    }
+}
+
+use cpu::CpuTimer;
+
+// --- start/stop/toggle ---
 
 pub fn start_clicker_inner(app: &AppHandle) -> Result<ClickerStatusPayload, String> {
     let state = app.state::<ClickerState>();
@@ -84,12 +172,7 @@ pub fn start_clicker_inner(app: &AppHandle) -> Result<ClickerStatusPayload, Stri
         running.store(false, Ordering::SeqCst);
 
         print_run_stats(outcome.click_count, outcome.elapsed_secs, outcome.avg_cpu);
-
-        record_run(
-            outcome.click_count,
-            outcome.elapsed_secs,
-            outcome.avg_cpu,
-        );
+        record_run(outcome.click_count, outcome.elapsed_secs, outcome.avg_cpu);
 
         let state = app_handle.state::<ClickerState>();
         *state.stop_reason.lock().unwrap() = Some(outcome.stop_reason.clone());
@@ -101,6 +184,7 @@ pub fn start_clicker_inner(app: &AppHandle) -> Result<ClickerStatusPayload, Stri
     emit_status(app);
     Ok(payload)
 }
+
 pub fn stop_clicker_inner(
     app: &AppHandle,
     stop_reason: Option<String>,
@@ -223,16 +307,13 @@ pub fn now_epoch_ms() -> u64 {
         .unwrap_or(0)
 }
 
-// -- Engine loop --
+// --- main loop ---
 
 pub fn start_clicker(config: ClickerConfig, running: Arc<AtomicBool>) -> RunOutcome {
     CLICK_COUNT.store(0, Ordering::SeqCst);
 
-    let mut current = 0u32;
-    unsafe { NtSetTimerResolution(10000, 1, &mut current) };
-
-    let cycle_freq = calibrate_cycle_freq();
-    let cpu_cycles_start = thread_cycles();
+    set_timer_resolution(true);
+    let cpu_timer = CpuTimer::start();
     let start_time = Instant::now();
 
     let mut rng = SmallRng::new();
@@ -352,23 +433,10 @@ pub fn start_clicker(config: ClickerConfig, running: Arc<AtomicBool>) -> RunOutc
     }
 
     running.store(false, Ordering::SeqCst);
-    unsafe { NtSetTimerResolution(10000, 0, &mut current) };
+    set_timer_resolution(false);
 
     let elapsed_secs = start_time.elapsed().as_secs_f64();
-    let cpu_cycles_end = thread_cycles();
-    let cycle_delta = cpu_cycles_end.saturating_sub(cpu_cycles_start);
-
-    let avg_cpu: f64 = if elapsed_secs < 0.001 {
-        -1.0
-    } else {
-        let cpu_seconds = cycle_delta as f64 / cycle_freq;
-        let pct = (cpu_seconds / elapsed_secs) * 100.0;
-        if pct < 0.001 {
-            -1.0
-        } else {
-            pct
-        }
-    };
+    let avg_cpu = cpu_timer.finish(elapsed_secs);
 
     RunOutcome {
         stop_reason,

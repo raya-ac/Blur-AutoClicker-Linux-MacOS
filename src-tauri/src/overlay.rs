@@ -24,14 +24,38 @@ pub fn init_overlay(app: &AppHandle) -> Result<(), String> {
 
     log::info!("[Overlay] Running one-time init...");
 
+    // Hide first so nothing flashes on screen during setup.
+    let _ = window.hide();
+
     window
         .set_ignore_cursor_events(true)
         .map_err(|e| e.to_string())?;
-    let _ = window.set_fullscreen(true);
     let _ = window.set_decorations(false);
 
     #[cfg(target_os = "windows")]
-    apply_win32_styles(&window)?;
+    {
+        let _ = window.set_fullscreen(true);
+        apply_win32_styles(&window)?;
+    }
+
+    // macOS fullscreen modes (both native and simple) add an opaque background
+    // that kills transparency. Instead, manually size the window to cover the
+    // whole screen and rely on transparent:true + macOSPrivateApi.
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(Some(monitor)) = app.primary_monitor() {
+            let scale = monitor.scale_factor();
+            let w = (monitor.size().width as f64 / scale) as u32;
+            let h = (monitor.size().height as f64 / scale) as u32;
+            let _ = window.set_position(tauri::LogicalPosition::new(0.0, 0.0));
+            let _ = window.set_size(tauri::LogicalSize::new(w, h));
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let _ = window.set_fullscreen(true);
+    }
 
     log::info!("[Overlay] Init complete — window configured but hidden");
     Ok(())
@@ -60,6 +84,11 @@ pub fn show_overlay(app: &AppHandle) -> Result<(), String> {
             let hwnd = get_hwnd(&window)?;
             unsafe { ShowWindow(hwnd, 4) };
         }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = window.show();
     }
 
     *LAST_ZONE_SHOW.lock().unwrap() = Some(Instant::now());
@@ -114,6 +143,10 @@ pub fn check_auto_hide(app: &AppHandle) {
                     if let Ok(hwnd) = get_hwnd(&window) {
                         unsafe { ShowWindow(hwnd, 0) };
                     }
+                }
+                #[cfg(not(target_os = "windows"))]
+                {
+                    let _ = window.hide();
                 }
             }
         }

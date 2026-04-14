@@ -42,11 +42,24 @@ pub struct RunOutcome {
 }
 static CLICK_COUNT: AtomicI64 = AtomicI64::new(0);
 
+#[cfg(target_os = "windows")]
 #[link(name = "ntdll")]
 extern "system" {
-    fn NtSetTimerResolution(
+    pub fn NtSetTimerResolution(
         DesiredResolution: u32,
         SetResolution: u8,
         CurrentResolution: *mut u32,
     ) -> u32;
+}
+
+// Bump Windows timer to 1ms. Other OSes don't need this.
+#[cfg(target_os = "windows")]
+pub fn set_timer_resolution(enable: bool) {
+    let mut current: u32 = 0;
+    unsafe { NtSetTimerResolution(10000, if enable { 1 } else { 0 }, &mut current) };
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn set_timer_resolution(_enable: bool) {
+    // not needed on mac/linux
 }

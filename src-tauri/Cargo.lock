@@ -6,9 +6,12 @@ version = 3
 name = "BlurAutoClicker"
 version = "3.3.0"
 dependencies = [
+ "core-foundation 0.10.1",
+ "core-graphics 0.24.0",
  "dirs",
  "hex",
  "hmac",
+ "libc",
  "log",
  "raw-window-handle",
  "reqwest 0.12.28",
@@ -25,6 +28,7 @@ dependencies = [
  "tokio",
  "windows-sys 0.52.0",
  "windows-targets 0.48.5",
+ "x11",
 ]
 
 [[package]]
@@ -507,6 +511,19 @@ name = "core-foundation-sys"
 version = "0.8.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
+
+[[package]]
+name = "core-graphics"
+version = "0.24.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fa95a34622365fa5bbf40b20b75dba8dfa8c94c734aea8ac9a5ca38af14316f1"
+dependencies = [
+ "bitflags 2.11.0",
+ "core-foundation 0.10.1",
+ "core-graphics-types",
+ "foreign-types 0.5.0",
+ "libc",
+]
 
 [[package]]
 name = "core-graphics"
@@ -4087,7 +4104,7 @@ dependencies = [
  "bitflags 2.11.0",
  "block2",
  "core-foundation 0.10.1",
- "core-graphics",
+ "core-graphics 0.25.0",
  "crossbeam-channel",
  "dispatch2",
  "dlopen2",
