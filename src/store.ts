@@ -148,7 +148,7 @@ function sanitizeSettings(input?: Partial<Settings> | null): Settings {
     ...DEFAULT_SETTINGS,
     ...saved,
     version: version,
-    clickSpeed: clampNumber(saved.clickSpeed, DEFAULT_SETTINGS.clickSpeed, 1, 500),
+    clickSpeed: clampNumber(saved.clickSpeed, DEFAULT_SETTINGS.clickSpeed, 1),
     dutyCycleEnabled: sanitizeBoolean(saved.dutyCycleEnabled, DEFAULT_SETTINGS.dutyCycleEnabled),
     speedVariationEnabled: sanitizeBoolean(
       saved.speedVariationEnabled,

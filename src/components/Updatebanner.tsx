@@ -1,5 +1,5 @@
 import { check } from "@tauri-apps/plugin-updater";
-import "./UpdateBanner.css";
+import "./Updatebanner.css";
 
 interface UpdateBannerProps {
   currentVersion: string;

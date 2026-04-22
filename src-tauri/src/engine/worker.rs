@@ -325,7 +325,8 @@ pub fn start_clicker(config: ClickerConfig, running: Arc<AtomicBool>) -> RunOutc
         0.0
     };
     let batch_size = if !config.double_click_enabled && cps >= 50.0 {
-        2usize
+        // Target ~1ms per batch; cap at 20 to avoid overflowing the X11 event queue.
+        ((cps / 1000.0).ceil() as usize).max(2).min(20)
     } else {
         1usize
     };
@@ -367,7 +368,7 @@ pub fn start_clicker(config: ClickerConfig, running: Arc<AtomicBool>) -> RunOutc
         };
         let hold_ms = (config.interval * (config.duty.max(0.0) / 100.0) * 1000.0) as u32;
 
-        next_batch_time += Duration::from_secs_f64(batch_duration.max(0.001));
+        next_batch_time += Duration::from_secs_f64(batch_duration.max(0.0));
 
         if has_position {
             if config.offset_chance <= 0.0 || rng.next_f64() * 100.0 <= config.offset_chance {
@@ -428,7 +429,18 @@ pub fn start_clicker(config: ClickerConfig, running: Arc<AtomicBool>) -> RunOutc
 
         let remaining = next_batch_time.saturating_duration_since(Instant::now());
         if remaining > Duration::ZERO {
-            sleep_interruptible(remaining, &running);
+            if cps >= 50.0 {
+                // Sleep until ~200µs before target then spin for sub-ms precision.
+                let coarse = remaining.saturating_sub(Duration::from_micros(200));
+                if !coarse.is_zero() {
+                    std::thread::sleep(coarse);
+                }
+                while running.load(Ordering::SeqCst) && Instant::now() < next_batch_time {
+                    std::hint::spin_loop();
+                }
+            } else {
+                sleep_interruptible(remaining, &running);
+            }
         }
     }
 

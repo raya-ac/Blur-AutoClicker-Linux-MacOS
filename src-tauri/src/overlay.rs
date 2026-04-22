@@ -1,7 +1,9 @@
 use crate::app_state::ClickerState;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
+
+static CURSOR_EVENTS_INIT: AtomicBool = AtomicBool::new(false);
 use tauri::{AppHandle, Emitter, Manager};
 
 static LAST_ZONE_SHOW: Mutex<Option<Instant>> = Mutex::new(None);
@@ -27,9 +29,8 @@ pub fn init_overlay(app: &AppHandle) -> Result<(), String> {
     // Hide first so nothing flashes on screen during setup.
     let _ = window.hide();
 
-    window
-        .set_ignore_cursor_events(true)
-        .map_err(|e| e.to_string())?;
+    // set_ignore_cursor_events is deferred to first show — calling it before
+    // the window is realized crashes on Linux (tao unwraps a None GDK window).
     let _ = window.set_decorations(false);
 
     #[cfg(target_os = "windows")]
@@ -89,6 +90,10 @@ pub fn show_overlay(app: &AppHandle) -> Result<(), String> {
     #[cfg(not(target_os = "windows"))]
     {
         let _ = window.show();
+        // Now the window is realized — safe to set cursor ignore on Linux.
+        if !CURSOR_EVENTS_INIT.swap(true, Ordering::SeqCst) {
+            let _ = window.set_ignore_cursor_events(true);
+        }
     }
 
     *LAST_ZONE_SHOW.lock().unwrap() = Some(Instant::now());

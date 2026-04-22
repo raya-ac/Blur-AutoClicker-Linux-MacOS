@@ -191,83 +191,90 @@ mod platform {
     use x11::xlib;
     use x11::xtest;
     use std::ptr;
+    use std::cell::Cell;
 
-    fn with_display<T>(f: impl FnOnce(*mut xlib::Display) -> T) -> Option<T> {
-        let display = unsafe { xlib::XOpenDisplay(ptr::null()) };
-        if display.is_null() {
-            return None;
-        }
-        let result = f(display);
-        unsafe { xlib::XCloseDisplay(display) };
-        Some(result)
+    // One persistent connection per thread — avoids open/close on every call.
+    thread_local! {
+        static DISPLAY: Cell<*mut xlib::Display> = Cell::new(ptr::null_mut());
+    }
+
+    fn get_display() -> *mut xlib::Display {
+        DISPLAY.with(|cell| {
+            let d = cell.get();
+            if !d.is_null() {
+                return d;
+            }
+            let d = unsafe { xlib::XOpenDisplay(ptr::null()) };
+            cell.set(d);
+            d
+        })
     }
 
     pub fn current_cursor_position() -> Option<(i32, i32)> {
-        with_display(|display| {
-            let root = unsafe { xlib::XDefaultRootWindow(display) };
-            let (mut root_ret, mut child_ret) = (0, 0);
-            let (mut rx, mut ry, mut wx, mut wy) = (0, 0, 0, 0);
-            let mut mask = 0;
-            unsafe {
-                xlib::XQueryPointer(
-                    display, root, &mut root_ret, &mut child_ret,
-                    &mut rx, &mut ry, &mut wx, &mut wy, &mut mask,
-                );
-            }
-            (rx, ry)
-        })
+        let display = get_display();
+        if display.is_null() { return None; }
+        let root = unsafe { xlib::XDefaultRootWindow(display) };
+        let (mut root_ret, mut child_ret) = (0, 0);
+        let (mut rx, mut ry, mut wx, mut wy) = (0, 0, 0, 0);
+        let mut mask = 0;
+        unsafe {
+            xlib::XQueryPointer(
+                display, root, &mut root_ret, &mut child_ret,
+                &mut rx, &mut ry, &mut wx, &mut wy, &mut mask,
+            );
+        }
+        Some((rx, ry))
     }
 
     pub fn current_screen_size() -> Option<(i32, i32)> {
-        with_display(|display| {
-            let screen = unsafe { xlib::XDefaultScreen(display) };
-            let w = unsafe { xlib::XDisplayWidth(display, screen) };
-            let h = unsafe { xlib::XDisplayHeight(display, screen) };
-            (w, h)
-        })
+        let display = get_display();
+        if display.is_null() { return None; }
+        let screen = unsafe { xlib::XDefaultScreen(display) };
+        let w = unsafe { xlib::XDisplayWidth(display, screen) };
+        let h = unsafe { xlib::XDisplayHeight(display, screen) };
+        Some((w, h))
     }
 
     pub fn move_mouse(x: i32, y: i32) {
-        with_display(|display| {
-            let root = unsafe { xlib::XDefaultRootWindow(display) };
-            unsafe {
-                xlib::XWarpPointer(display, 0, root, 0, 0, 0, 0, x, y);
-                xlib::XFlush(display);
-            }
-        });
+        let display = get_display();
+        if display.is_null() { return; }
+        let root = unsafe { xlib::XDefaultRootWindow(display) };
+        unsafe {
+            xlib::XWarpPointer(display, 0, root, 0, 0, 0, 0, x, y);
+            xlib::XFlush(display);
+        }
     }
 
     fn x11_button(button: i32) -> u32 {
         match button {
-            2 => 3, // X11: 3 = right click
-            3 => 2, // X11: 2 = middle click
+            2 => 3,
+            3 => 2,
             _ => 1,
         }
     }
 
-    // low byte = X11 button, bit 8 = press/release
     pub fn send_mouse_event(flags: u32) {
+        let display = get_display();
+        if display.is_null() { return; }
         let x11_btn = (flags & 0xFF) as u32;
         let is_press = (flags >> 8) & 1 == 1;
-        with_display(|display| {
-            unsafe {
-                xtest::XTestFakeButtonEvent(display, x11_btn, if is_press { 1 } else { 0 }, 0);
-                xlib::XFlush(display);
-            }
-        });
+        unsafe {
+            xtest::XTestFakeButtonEvent(display, x11_btn, if is_press { 1 } else { 0 }, 0);
+            xlib::XFlush(display);
+        }
     }
 
     pub fn send_batch(down: u32, up: u32, n: usize) {
-        with_display(|display| {
-            let btn_down = (down & 0xFF) as u32;
+        let display = get_display();
+        if display.is_null() { return; }
+        let btn_down = (down & 0xFF) as u32;
+        unsafe {
             for _ in 0..n {
-                unsafe {
-                    xtest::XTestFakeButtonEvent(display, btn_down, 1, 0);
-                    xtest::XTestFakeButtonEvent(display, btn_down, 0, 0);
-                }
+                xtest::XTestFakeButtonEvent(display, btn_down, 1, 0);
+                xtest::XTestFakeButtonEvent(display, btn_down, 0, 0);
             }
-            unsafe { xlib::XFlush(display) };
-        });
+            xlib::XFlush(display);
+        }
     }
 
     pub fn get_button_flags(button: i32) -> (u32, u32) {
